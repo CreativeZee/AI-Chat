@@ -1,9 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net.Http;
+﻿using Newtonsoft.Json;
 using System.Text;
-using System.Threading.Tasks;
-using Newtonsoft.Json;
+using AI_Chat;
+using Google.Protobuf;
 
 class Program
 {
@@ -14,31 +12,62 @@ class Program
         Console.WriteLine();
         Console.WriteLine("GPT: Please tell me everything you want for your credit card, and I will find the correct match.");
         Console.WriteLine();
+        Disctionary disctionary = new Disctionary();
+
+        List<string> predefinedFeatures = new List<string>
+        {
+            "0% APR offer",
+            "Low Interest",
+            "Balance Transfer offer",
+            "Highest Rewards",
+            "Best for building credit",
+            "No annual fee",
+            "No application fee",
+            "Welcome Bonuses"
+        };
 
         while (true)
         {
             Console.Write("You: ");
-            var userQuestion = Console.ReadLine().Trim().ToLower();
+            var userQuestion = Console.ReadLine()?.Trim();
             Console.WriteLine();
+
             if (userQuestion == "exit")
             {
                 break;
             }
-            Console.WriteLine("<---------------------fetching best feature--------------------->");
+
+            Console.WriteLine("<---------------------fetching matched feature--------------------->");
+
             if (!string.IsNullOrEmpty(userQuestion))
             {
-                string gpt3Response = await GetGPT3Response(userQuestion);
+                string jsonData = JsonConvert.SerializeObject(predefinedFeatures);
+                var Prompt = ". Kindly matched question with Data and then give me matched predefined features";
+                string requestMessage = userQuestion + " " + Prompt + " " + $"Data: {jsonData}";
+                string gpt3Response = await GetGPT3Response(requestMessage);
+                List<string> response = ExtractFeaturesFromGPT3Response(userQuestion, gpt3Response, predefinedFeatures);
+                List<string> matchedFeatures = MatchWithPredefinedFeatures(userQuestion,gpt3Response, disctionary.keywordFeatureMapping);
 
-                string bestMatchedFeature = MatchWithPredefinedFeatures(userQuestion, gpt3Response);
+                if (matchedFeatures != null && matchedFeatures.Count > 0)
+                {
+                    HashSet<string> uniqueFeatures = new HashSet<string>(matchedFeatures);
 
-                if (bestMatchedFeature != null)
+                    Console.WriteLine();
+                    Console.WriteLine("Matched Features are:");
+                    Console.WriteLine();
+
+                    foreach (var feature in uniqueFeatures)
+                    {
+                        Console.WriteLine(feature);
+                    }
+
+                    Console.WriteLine();
+                }
+                else if (response != null)
                 {
                     Console.WriteLine();
-                    Console.WriteLine($"Best Match Feature is :");
-                    Console.WriteLine(bestMatchedFeature);
-                    Console.WriteLine();
-                    //Console.WriteLine($"Jaccard Similarity (User): {CalculateJaccardSimilarity(userQuestion, bestMatchedFeature)}");
-                    //Console.WriteLine($"Jaccard Similarity (GPT-3): {CalculateJaccardSimilarity(gpt3Response, bestMatchedFeature)}");
+                    Console.WriteLine("Matched Features are:");
+                    Console.WriteLine(response);
                 }
                 else
                 {
@@ -53,79 +82,86 @@ class Program
         }
     }
 
+    static List<string> MatchWithPredefinedFeatures(string userQuestion,string gptResponse, Dictionary<string, string> keywordFeatureMapping)
+    {
+        string userQuestionLower = userQuestion.ToLower();
+        var matchedFeatures = new List<string>();
+        foreach (var mapping in keywordFeatureMapping)
+        {
+            if (userQuestionLower.Contains(mapping.Key))
+            {
+                matchedFeatures.Add(mapping.Value);
+            }
+        }
+
+        return matchedFeatures;
+    }
+    static List<string> ExtractFeaturesFromGPT3Response(string userQuestion, string gpt3Response, List<string> predefinedFeatures)
+    {
+        var extractedFeatures = gpt3Response?.Split(' ').Select(f => f.Trim()).ToList();
+        var matchedFeatures = new List<string>();
+
+        foreach (var predefinedFeature in predefinedFeatures)
+        {
+            var featureParts = predefinedFeature.ToLower().Split(' ');
+            if (featureParts.Any(part => userQuestion.ToLower().Contains(part)) && featureParts.Any(part => extractedFeatures.Any(extractedWord => extractedWord.ToLower().Contains(part))))
+            {
+                matchedFeatures.Add(predefinedFeature);
+            }
+        }
+
+        return matchedFeatures;
+    }
+
     static async Task<string> GetGPT3Response(string userQuestion)
     {
-        HttpClient client = new HttpClient();
-        client.DefaultRequestHeaders.Add("authorization", "Your API Key");
-
-        var content = new StringContent("{\"model\": \"gpt-3.5-turbo-instruct\", \"prompt\": \"" + userQuestion + "\",\"temperature\": 0.7,\"max_tokens\": 250}",
-                    Encoding.UTF8, "application/json");
-
-        HttpResponseMessage response = await client.PostAsync("https://api.openai.com/v1/completions", content);
-
-        string responseString = await response.Content.ReadAsStringAsync();
-
         try
         {
-            var dyData = JsonConvert.DeserializeObject<dynamic>(responseString);
-            return dyData?.choices[0]?.text;
+            string GPTmodel = "gpt-3.5-turbo-instruct";
+            int Temperature = 1;
+            int maximumTokens = 1000;
+            string OpenaiApiKey = "API KEY";
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {OpenaiApiKey}");
+
+                var requestObject = new
+                {
+                    model = GPTmodel,
+                    prompt = userQuestion,
+                    temperature = Temperature,
+                    max_tokens = maximumTokens
+                };
+                var content = new StringContent(JsonConvert.SerializeObject(requestObject), Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync("https://api.openai.com/v1/completions", content);
+
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                try
+                {
+                    var dyData = JsonConvert.DeserializeObject<dynamic>(responseString);
+
+                    if (dyData != null && dyData.choices != null && dyData.choices.Count > 0 && dyData.choices[0] != null)
+                    {
+                        string generatedText = dyData.choices[0].text;
+                        return generatedText;
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return null;
+                }
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"---> Could not deserialize the JSON: {ex.Message}");
             return null;
         }
     }
 
-    static string MatchWithPredefinedFeatures(string userQuestion, string gpt3Response)
-    {
-        List<string> predefinedFeatures = new List<string>
-        {
-            "0% APR offer",
-            "Low Interest",
-            "Balance Transfer offer",
-            "Highest Rewards",
-            "Best for building credit",
-            "No annual fee",
-            "No application fee",
-            "Welcome Bonuses"
-        };
-
-        double bestJaccardSimilarity = 0.0;
-        string bestMatch = null;
-
-        foreach (var feature in predefinedFeatures)
-        {
-            var predefinedWords = feature.ToLower().Split(' ');
-
-            var intersectionUser = predefinedWords.Intersect(userQuestion.ToLower().Split(' '));
-            var unionUser = predefinedWords.Union(userQuestion.ToLower().Split(' '));
-            var jaccardSimilarityUser = (double)intersectionUser.Count() / unionUser.Count();
-
-            var intersectionGpt3 = predefinedWords.Intersect(gpt3Response.ToLower().Split(' '));
-            var unionGpt3 = predefinedWords.Union(gpt3Response.ToLower().Split(' '));
-            var jaccardSimilarityGpt3 = (double)intersectionGpt3.Count() / unionGpt3.Count();
-
-            var averageSimilarity = (jaccardSimilarityUser + jaccardSimilarityGpt3) / 2;
-
-            if (averageSimilarity > bestJaccardSimilarity)
-            {
-                bestJaccardSimilarity = averageSimilarity;
-                bestMatch = feature;
-            }
-        }
-
-        return bestMatch;
-    }
-
-    static double CalculateJaccardSimilarity(string text1, string text2)
-    {
-        var words1 = text1.ToLower().Split(' ');
-        var words2 = text2.ToLower().Split(' ');
-
-        var intersection = words1.Intersect(words2);
-        var union = words1.Union(words2);
-
-        return (double)intersection.Count() / union.Count();
-    }
 }
